@@ -4,6 +4,7 @@
 #include <stm32.h>
 
 // ===== LEDS CONFIG =====
+// TODO: Remove those
 #define RED_LED_GPIO GPIOA
 #define GREEN_LED_GPIO GPIOA
 #define BLUE_LED_GPIO GPIOB
@@ -70,111 +71,146 @@
 #define FIRE_BTN_ON_STATE 0
 
 // ===== GLOBAL STATE =====
-enum LedRequest {
-  NoRequest,
-  RedReqLedOn,
-  RedReqLedOff,
-  RedReqLedChange,
-  BlueReqLedOn,
-  BlueReqLedOff,
-  BlueReqLedChange,
-  GreenBigReqLedOn,
-  GreenBigReqLedOff,
-  GreenBigReqLedChange,
-  GreenSmallReqLedOn,
-  GreenSmallReqLedOff,
-  GreenSmallReqLedChange,
-} typedef LedRequest;
 
 #define BUFFER_SIZE 128
-static char internal_in_buffer[BUFFER_SIZE];
 static char internal_out_buffer[BUFFER_SIZE];
-static CyclicBuffer_t in_buffer_struct;
 static CyclicBuffer_t out_buffer_struct;
 
-static CyclicBuffer_t *in_buffer = &in_buffer_struct;
 static CyclicBuffer_t *out_buffer = &out_buffer_struct;
 
 static int strLen(const char *line) {
-  int i = 0;
-  while (line[i] != '\0')
-    i++;
-  return i;
+    int i = 0;
+    while (line[i] != '\0')
+        i++;
+    return i;
 }
 
 static void printLine(const char *line) {
-  if (strLen(line) + 2 > cycBufCapacity(out_buffer)) {
-    return;
-  }
-  int i = 0;
-  while (line[i] != '\0') {
-    cycBufWrite(out_buffer, line[i++]);
-  }
-  cycBufWrite(out_buffer, '\r');
-  cycBufWrite(out_buffer, '\n');
+    if (strLen(line) + 2 > cycBufCapacity(out_buffer)) {
+        return;
+    }
+    int i = 0;
+    while (line[i] != '\0') {
+        cycBufWrite(out_buffer, line[i++]);
+    }
+    cycBufWrite(out_buffer, '\r');
+    cycBufWrite(out_buffer, '\n');
 }
 
 // ===== SETUP =====
 static void setupLeds(void) {
-  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN;
-  __NOP();
-  RedLEDoff();
-  GreenBigLEDoff();
-  BlueLEDoff();
-  GreenSmallLEDoff();
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN;
+    __NOP();
+    RedLEDoff();
+    GreenBigLEDoff();
+    BlueLEDoff();
+    GreenSmallLEDoff();
 
-  GPIOoutConfigure(RED_LED_GPIO, RED_LED_PIN, GPIO_OType_PP, GPIO_Low_Speed,
-                   GPIO_PuPd_NOPULL);
-  GPIOoutConfigure(BLUE_LED_GPIO, BLUE_LED_PIN, GPIO_OType_PP, GPIO_Low_Speed,
-                   GPIO_PuPd_NOPULL);
-  GPIOoutConfigure(GREEN_LED_GPIO, GREEN_LED_PIN, GPIO_OType_PP, GPIO_Low_Speed,
-                   GPIO_PuPd_NOPULL);
-  GPIOoutConfigure(GREEN2_LED_GPIO, GREEN2_LED_PIN, GPIO_OType_PP,
-                   GPIO_Low_Speed, GPIO_PuPd_NOPULL);
+    GPIOoutConfigure(RED_LED_GPIO, RED_LED_PIN, GPIO_OType_PP, GPIO_Low_Speed, GPIO_PuPd_NOPULL);
+    GPIOoutConfigure(BLUE_LED_GPIO, BLUE_LED_PIN, GPIO_OType_PP, GPIO_Low_Speed, GPIO_PuPd_NOPULL);
+    GPIOoutConfigure(GREEN_LED_GPIO, GREEN_LED_PIN, GPIO_OType_PP, GPIO_Low_Speed,
+                     GPIO_PuPd_NOPULL);
+    GPIOoutConfigure(GREEN2_LED_GPIO, GREEN2_LED_PIN, GPIO_OType_PP, GPIO_Low_Speed,
+                     GPIO_PuPd_NOPULL);
 }
 
 static void setupUsart(void) {
-  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
-  RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 
-  GPIOafConfigure(GPIOA, 2, GPIO_OType_PP, GPIO_Fast_Speed, GPIO_PuPd_NOPULL,
-                  GPIO_AF_USART2);
-  GPIOafConfigure(GPIOA, 3, GPIO_OType_PP, GPIO_Fast_Speed, GPIO_PuPd_UP,
-                  GPIO_AF_USART2);
+    GPIOafConfigure(GPIOA, 2, GPIO_OType_PP, GPIO_Fast_Speed, GPIO_PuPd_NOPULL, GPIO_AF_USART2);
+    GPIOafConfigure(GPIOA, 3, GPIO_OType_PP, GPIO_Fast_Speed, GPIO_PuPd_UP, GPIO_AF_USART2);
 
-  USART2->CR1 = USART_Mode_Rx_Tx | USART_WordLength_8b | USART_Parity_No;
-  USART2->CR2 = USART_StopBits_1;
-  USART2->CR3 = USART_FlowControl_None;
-  USART2->BRR = (PCLK1_HZ + (BAUD / 2U)) / BAUD;
-  USART2->CR1 |= USART_Enable;
+    USART2->CR1 = USART_Mode_Rx_Tx | USART_WordLength_8b | USART_Parity_No;
+    USART2->CR2 = USART_StopBits_1;
+    USART2->CR3 = USART_FlowControl_None;
+    USART2->BRR = (PCLK1_HZ + (BAUD / 2U)) / BAUD;
+    USART2->CR1 |= USART_Enable;
 }
 
-static void setupButtons(void) {
-  RCC->AHB1ENR |=
-      RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOCEN;
-}
+static void setupBuffers(void) { cycBufInit(out_buffer, internal_out_buffer, BUFFER_SIZE); }
 
-static void setupBuffers(void) {
-  cycBufInit(in_buffer, internal_in_buffer, BUFFER_SIZE);
-  cycBufInit(out_buffer, internal_out_buffer, BUFFER_SIZE);
-}
-
-// ==== UART =====
 /**
- * @brief Read one char from UART and save it in the `in_buffer`.
+ * @brief Read one char from the `out_buffer` and send it to UART.
  */
-static void uartRead(void) {
-  if (!cycBufFull(in_buffer) && (USART2->SR & USART_SR_RXNE)) {
-    char c = USART2->DR;
-    cycBufWrite(in_buffer, c);
-  }
+static void uartWrite(void) {
+    if (!cycBufEmpty(out_buffer) && (USART2->SR & USART_SR_TXE)) {
+        char val = '\0';
+        cycBufRead(out_buffer, &val);
+        USART2->DR = val;
+    }
 }
 
+// ==== KEYBOARD =====
+static const int column_pins[] = {0, 1, 2, 3}; // PC0, PC1, PC2, PC3
+static const int row_pins[] = {6, 7, 8, 9};    // PC6, PC7, PC8, PC9
+static const char keymap[4][4] = {
+    {'1', '2', '3', 'A'},
+    {'4', '5', '6', 'B'},
+    {'7', '8', '9', 'C'},
+    {'*', '0', '#', 'D'},
+};
+
+static void setupKeyboard(void) {
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;
+
+    // Setup columns.
+    for (int i = 0; i < 4; i++) {
+        GPIOoutConfigure(GPIOC, column_pins[i], GPIO_OType_PP, GPIO_Low_Speed, GPIO_PuPd_NOPULL);
+        GPIOC->BSRR = (1 << column_pins[i]);
+    }
+
+    // Setup rows.
+    for (int i = 0; i < 4; i++) {
+        GPIOinConfigure(GPIOC, row_pins[i], GPIO_PuPd_UP, EXTI_Mode_Disable, EXTI_Trigger_Falling);
+    }
+}
+
+static char scanKeyboard(void) {
+    for (int col = 0; col < 4; col++) {
+        GPIOC->BSRR = (1 << (column_pins[col] + 16)); // Low state on column.
+
+        for (volatile int i = 0; i < 100; i++)
+            ;
+
+        for (int row = 0; row < 4; row++) {
+            // If row pin is in inactive state, then this key is pressed.
+            if (!((GPIOC->IDR >> row_pins[row]) & 1)) {
+                // Active state on column again.
+                GPIOC->BSRR = (1 << column_pins[col]);
+                return keymap[row][col];
+            }
+        }
+
+        // Deactivate the column -> set it in active state.
+        GPIOC->BSRR = (1 << column_pins[col]);
+    }
+    return '\0';
+}
+
+static void checkKeyboardState(void) {
+    static char last_key_pressed = '\0';
+    char current_key = scanKeyboard();
+
+    if (current_key != '\0' && current_key != last_key_pressed) {
+        char msg[] = "Key: X";
+        msg[5] = current_key;
+        printLine(msg);
+    }
+
+    last_key_pressed = current_key;
+}
 
 int main(void) {
-  setupLeds();
-  setupUsart();
+    setupLeds();
+    setupUsart();
+    setupBuffers();
+    setupKeyboard();
 
-  for (;;) {
-  }
+    printLine("SMS Init");
+
+    for (;;) {
+        checkKeyboardState();
+        uartWrite();
+    }
 }
