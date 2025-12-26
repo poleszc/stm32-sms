@@ -1,7 +1,9 @@
 #include "cyclic_buffer.h"
-#include <gpio.h>
 #include <stdbool.h>
 #include <stm32.h>
+#include <lcd.h>
+#include <gpio.h>
+
 
 // ===== LEDS CONFIG =====
 // TODO: Remove those
@@ -196,9 +198,32 @@ static void checkKeyboardState(void) {
         char msg[] = "Key: X";
         msg[5] = current_key;
         printLine(msg);
+		
+		if (current_key == '*') {
+			LCDclear();
+		} else if (current_key == '#') {
+			LCDputchar('\n');
+		} else {
+			LCDputcharWrap(current_key);
+		}
+
+
     }
 
     last_key_pressed = current_key;
+}
+
+#define LCD_CAPACITY 45
+static void lcdWriteLine(const char* line) {
+    if (strLen(line) > LCD_CAPACITY - 1) {
+        return;
+    }
+    int i = 0;
+    while (line[i] != '\0') {
+		LCDputcharWrap(line[i]);
+		i++;
+    }
+	LCDputcharWrap('\n');
 }
 
 int main(void) {
@@ -206,8 +231,11 @@ int main(void) {
     setupUsart();
     setupBuffers();
     setupKeyboard();
+	LCDconfigure();
 
     printLine("SMS Init");
+    lcdWriteLine("Press key:");
+	
 
     for (;;) {
         checkKeyboardState();
