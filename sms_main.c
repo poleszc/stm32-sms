@@ -1,9 +1,8 @@
 #include "cyclic_buffer.h"
+#include <gpio.h>
+#include <lcd.h>
 #include <stdbool.h>
 #include <stm32.h>
-#include <lcd.h>
-#include <gpio.h>
-
 
 // ===== LEDS CONFIG =====
 // TODO: Remove those
@@ -152,6 +151,21 @@ static const char keymap[4][4] = {
     {'7', '8', '9', 'C'},
     {'*', '0', '#', 'D'},
 };
+static const char *big_key_map[] = {" 0",
+                                  ".,?1!1",
+                                  "ABC2"
+                                  "DEF3",
+                                  "GHI4",
+                                  "JKL5",
+                                  "MNO6",
+                                  "PQRS7",
+                                  "TUV8",
+                                  "WXYZ9"};
+
+#define MULTI_TAP_TIMEOUT 1000 // 1 second (in miliseconds)
+
+volatile uint32_t system_mills = 0;
+uint32_t mills() { return system_mills; }
 
 static void setupKeyboard(void) {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;
@@ -198,46 +212,106 @@ static void checkKeyboardState(void) {
         char msg[] = "Key: X";
         msg[5] = current_key;
         printLine(msg);
-		
-		if (current_key == '*') {
-			LCDclear();
-		} else if (current_key == '#') {
-			LCDputchar('\n');
-		} else {
-			LCDputcharWrap(current_key);
-		}
 
-
+        if (current_key == '*') {
+            LCDclear();
+        } else if (current_key == '#') {
+            LCDputchar('\n');
+        } else {
+            LCDputcharWrap(current_key);
+        }
     }
 
     last_key_pressed = current_key;
 }
 
+static char last_key_pressed = '\0';
+static int tap_count = 0;
+static uint32_t last_key_time = 0;
+int cursor_pos = 0;
+
+static void processSmsEditor(void) {
+    if (last_key_pressed != '\0' && (mills() - last_key_time > MULTI_TAP_TIMEOUT)) {
+        cursor_pos++;
+        last_key_pressed = '\0';
+        tap_count = 0;
+    }
+
+    char current_key = scanKeyboard();
+
+    if (current_key != '\0') {
+        last_key_time = mills();
+		// TODO: Remove
+        char msg[] = "Key: X";
+        msg[5] = current_key;
+        printLine(msg);
+
+        if (current_key >= '0' && current_key <= '9') {
+            int key_index = current_key - '0';
+            const char *key_chars = big_key_map[key_index];
+            // TODO: Make use of the stdlib strlen.
+            int key_chars_len = strLen(key_chars);
+
+            if (current_key == last_key_pressed) { // Same key
+                tap_count++;
+                char char_to_display = key_chars[tap_count % key_chars_len];
+                LCDgoto(cursor_pos / 9, cursor_pos % 9);
+                LCDputchar(char_to_display);
+            } else { // Different key.
+                if (last_key_pressed != '\0') {
+                    cursor_pos++;
+                }
+                last_key_pressed = current_key;
+                tap_count = 0;
+                char char_to_display = key_chars[0];
+                LCDgoto(cursor_pos / 9, cursor_pos % 9);
+                LCDputchar(char_to_display);
+            }
+        } else if (current_key == 'C') {
+            last_key_pressed = '\0';
+            tap_count = 0;
+            if (cursor_pos > 0) {
+                cursor_pos--;
+                LCDgoto(cursor_pos / 9, cursor_pos % 9);
+                LCDputchar(' ');
+                LCDgoto(cursor_pos / 9, cursor_pos % 9);
+            }
+        } else if (current_key == '*')  {
+			LCDclear();
+			last_key_pressed = '\0';
+			cursor_pos = 0;
+			tap_count = 0;
+		}
+    }
+}
+
 #define LCD_CAPACITY 45
-static void lcdWriteLine(const char* line) {
+static void lcdWriteLine(const char *line) {
     if (strLen(line) > LCD_CAPACITY - 1) {
         return;
     }
     int i = 0;
     while (line[i] != '\0') {
-		LCDputcharWrap(line[i]);
-		i++;
+        LCDputcharWrap(line[i]);
+        i++;
     }
-	LCDputcharWrap('\n');
+    LCDputcharWrap('\n');
 }
+
+void SysTick_Handler(void) { system_mills++; }
 
 int main(void) {
     setupLeds();
     setupUsart();
     setupBuffers();
     setupKeyboard();
-	LCDconfigure();
+    LCDconfigure();
 
     printLine("SMS Init");
     lcdWriteLine("Press key:");
-	
 
     for (;;) {
+		// processSmsEditor();
         checkKeyboardState();
         uartWrite();
     }
