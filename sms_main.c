@@ -45,7 +45,7 @@ typedef struct {
     int cursor_x;               // Cursor position on screen in column
     int cursor_y;               // Cursor position on screen in raw
     int line_lengths[LCD_ROWS]; // How many characters are in each line. Used when doing backspace.
-    bool is_uppercase;          // Is shift pressed.
+    bool is_uppercase;          // Is capslock on.
     char last_raw_key;
     int multi_tap_idx;
     int last_confirmed_idx; // For repeating action
@@ -221,10 +221,16 @@ static void handle_sms_logic(char key, bool is_repeat) {
         // If we started holding the same key as before after a break we use the saved confirmed
         // index.
         if (key == editor.last_raw_key) {
-            editor.multi_tap_idx = editor.last_confirmed_idx;
-            editor_put_char(chars[editor.multi_tap_idx], false);
+            if (editor.waits_for_confirmation) {
+                if (editor.multi_tap_idx == 0) {
+                    editor.multi_tap_idx = editor.last_confirmed_idx;
+                }
+
+                editor.last_confirmed_idx = editor.multi_tap_idx;
+                editor.waits_for_confirmation = false;
+            }
+            editor_put_char(chars[editor.last_confirmed_idx], false);
             editor_move_next();
-            editor.waits_for_confirmation = false;
         }
     } else {
         if (key == editor.last_raw_key && editor.waits_for_confirmation) {
@@ -334,8 +340,6 @@ static void setupKeyboardInterrupts(void) {
     NVIC_EnableIRQ(EXTI9_5_IRQn);
     NVIC_EnableIRQ(TIM3_IRQn);
 }
-
-// ==================== KEYBOARD ====================
 
 int main(void) {
     LCDconfigure();
