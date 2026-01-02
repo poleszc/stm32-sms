@@ -65,7 +65,7 @@ static CyclicBuffer_t *out_buffer = &out_buffer_struct;
 // After 500ms a key hold is considered a hold.
 #define HOLD_DELAY (500 / TICK_MS)
 // After 500ms if a key hold is recognized we repeat the action again
-#define REPEAT_RATE (500 / TICK_MS)
+#define REPEAT_RATE (800 / TICK_MS)
 #define LCD_ROWS 5
 #define LCD_COLUMNS 9
 #define KEYBOARD_ROWS 4
@@ -94,11 +94,12 @@ typedef struct {
     bool is_uppercase; // Is shift pressed.
     char last_raw_key;
     int multi_tap_idx;
+    int last_confirmed_idx; // For repeating action
     int timeout_counter;
     bool waits_for_confirmation;
 } SMS_Editor_State_t;
 
-static SMS_Editor_State_t editor = {0, 0, false, '\0', 0, 0, false};
+static SMS_Editor_State_t editor = {0, 0, false, '\0', 0, 0, 0, false};
 // ==================== LCD ====================
 static void editor_clear_screen(void) {
     LCDclear();
@@ -128,9 +129,10 @@ static void editor_put_char(char c, bool is_preview) {
     }
 }
 
-static void handle_sms_logic(char key) {
-    if (key == 'A') { // Shift
-        editor.is_uppercase = !editor.is_uppercase;
+static void handle_sms_logic(char key, bool is_repeat) {
+    if (key == 'A') { // CapsLock
+        if (!is_repeat)
+            editor.is_uppercase = !editor.is_uppercase;
         return;
     }
 
@@ -146,19 +148,20 @@ static void handle_sms_logic(char key) {
         } else {
             if (editor.cursor_x > 0) { // This line not empty.
                 editor.cursor_x--;
-                LCDgoto(editor.cursor_y, editor.cursor_x);
-                LCDputchar(' ');
-                LCDgoto(editor.cursor_y, editor.cursor_x);
             } else if (editor.cursor_y > 0) { // This line empty, take one step higher.
                 editor.cursor_y--;
                 editor.cursor_x = LCD_COLUMNS - 1;
-                LCDgoto(editor.cursor_y, editor.cursor_x);
-                LCDputchar(' ');
-                LCDgoto(editor.cursor_y, editor.cursor_x);
             }
+            LCDgoto(editor.cursor_y, editor.cursor_x);
+            LCDputchar(' ');
+            LCDgoto(editor.cursor_y, editor.cursor_x);
         }
         return;
     }
+
+    // Don't repeat newlines and clears.
+    if (is_repeat && (key == 'C' || key == 'D'))
+        return;
 
     if (key == 'C') {
         editor_clear_screen();
@@ -197,26 +200,54 @@ static void handle_sms_logic(char key) {
         return;
     int len = strlen(chars);
 
-    if (key == editor.last_raw_key && editor.waits_for_confirmation) {
-        // Same key as before. Reset the timeout counter and loop to the next char.
-        editor.multi_tap_idx = (editor.multi_tap_idx + 1) % len;
-        editor.timeout_counter = 0;
-    } else {
-        // New key. Put the previous one on the screen if it wasn't confirmed.
-        if (editor.waits_for_confirmation) {
-            editor.cursor_x++;
-            if (editor.cursor_x >= LCD_COLUMNS) {
-                editor_new_line();
-            }
+    if (is_repeat) {
+        // If we started holding the same key as before after a break we use the saved confirmed
+        // index.
+        if (key == editor.last_raw_key && editor.multi_tap_idx == 0) {
+            editor.multi_tap_idx = editor.last_confirmed_idx;
         }
-        editor.last_raw_key = key;
-        editor.multi_tap_idx = 0;
-        editor.waits_for_confirmation = true;
+
+        if (editor.waits_for_confirmation) {
+            LCDgoto(editor.cursor_y, editor.cursor_x);
+            editor_put_char(chars[editor.multi_tap_idx], false);
+
+            editor.cursor_x++;
+            if (editor.cursor_x >= LCD_COLUMNS)
+                editor_new_line();
+            editor.waits_for_confirmation = false;
+        } else {
+            LCDgoto(editor.cursor_y, editor.cursor_x);
+            editor_put_char(chars[editor.multi_tap_idx], false);
+            editor.cursor_x++;
+            if (editor.cursor_x >= LCD_COLUMNS)
+                editor_new_line();
+        }
+
+    } else {
+        if (key == editor.last_raw_key && editor.waits_for_confirmation) {
+            // Same key as before. Reset the timeout counter and loop to the next char.
+            editor.multi_tap_idx = (editor.multi_tap_idx + 1) % len;
+        } else {
+            if (key != editor.last_raw_key) {
+                editor.last_confirmed_idx = 0;
+            }
+
+            // New key. Put the previous one on the screen if it wasn't confirmed.
+            if (editor.waits_for_confirmation) {
+                editor.cursor_x++;
+                if (editor.cursor_x >= LCD_COLUMNS) {
+                    editor_new_line();
+                }
+            }
+            editor.last_raw_key = key;
+            editor.multi_tap_idx = 0;
+            editor.waits_for_confirmation = true;
+        }
+        // Show preview.
         editor.timeout_counter = 0;
+        LCDgoto(editor.cursor_y, editor.cursor_x);
+        editor_put_char(chars[editor.multi_tap_idx], true);
     }
-    // Show preview.
-    LCDgoto(editor.cursor_y, editor.cursor_x);
-    editor_put_char(chars[editor.multi_tap_idx], true);
 }
 
 // ==================== SETUP ====================
@@ -322,7 +353,7 @@ void TIM3_IRQHandler(void) {
         if (current_key != '\0') {
             // New key, put it on the screen.
             if (current_key != last_key) {
-                handle_sms_logic(current_key);
+                handle_sms_logic(current_key, false);
                 last_key = current_key;
                 hold_timer = 0;
             } else { // Same key as before
@@ -330,7 +361,7 @@ void TIM3_IRQHandler(void) {
                 if (hold_timer >= HOLD_DELAY) {
                     // If the key is held, we repeat the action once in REPEAT_RATE.
                     if ((hold_timer - HOLD_DELAY) % REPEAT_RATE == 0) {
-                        handle_sms_logic(current_key);
+                        handle_sms_logic(current_key, true);
                     }
                 }
             }
@@ -344,8 +375,9 @@ void TIM3_IRQHandler(void) {
                 // Timeout exceeded accept the key. It's already on the screen so we just move the
                 // cursor.
                 if (editor.timeout_counter >= MULTI_TAP_TIMEOUT) {
+                    editor.last_confirmed_idx = editor.multi_tap_idx;
                     editor.waits_for_confirmation = false; // Key is confirmed.
-                    editor.last_raw_key = '\0';
+                    // editor.last_raw_key = '\0';
                     editor.cursor_x++;
                     if (editor.cursor_x >= LCD_COLUMNS) {
                         editor_new_line();
