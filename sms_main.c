@@ -156,9 +156,9 @@ static char scanKeyboard(void) {
         // Low state on column.
         GPIOC->BSRR = (1 << (column_pins[col] + 16));
 
-        // TODO: Why
-        for (volatile int i = 0; i < 100; i++)
-            ;
+        // Give the microcontroler some time to process the state change on the column. First row
+        // doesn't work if this isn't here.
+        __NOP();
 
         for (int row = 0; row < 4; row++) {
             // If row pin is in inactive state, then this key is pressed.
@@ -184,7 +184,7 @@ void EXTI9_5_IRQHandler(void) {
     // Check if the interrupt is on 6-9 pins.
     if (EXTI->PR & ROW_PINS) {
         // Deactivate row interrupts.
-        EXTI->IMR &= !ROW_PINS;
+        EXTI->IMR &= ~ROW_PINS;
         // Wyzeruj znaczniki przerwań wierszy.
         EXTI->PR = ROW_PINS;
 
@@ -199,9 +199,12 @@ void EXTI9_5_IRQHandler(void) {
         TIM3->CR1 |= TIM_CR1_CEN;
     }
 }
+#define HOLD_DELAY 50  // 50 * 10ms = 500ms
+#define REPEAT_RATE 20 // 20 * 10ms = 200ms
 
 void TIM3_IRQHandler(void) {
     static char last_key = '\0';
+    static int hold_timer = 0;
 
     // Sprawdzamy czy to nasze przerwanie.
     // TODO: Czy tak trzeba?
@@ -212,17 +215,27 @@ void TIM3_IRQHandler(void) {
         char current_key = scanKeyboard();
 
         if (current_key != '\0') {
-            // If a different key then before was pressed, put it on the screen.
+            // New key, put it on the screen.
             if (current_key != last_key) {
                 char msg[] = "Key: X";
                 msg[5] = current_key;
+
+                hold_timer = 0;
                 printLine(msg);
                 LCDputcharWrap(current_key);
                 last_key = current_key;
+            } else { // Same key as before
+                hold_timer++;
+                if (hold_timer >= HOLD_DELAY) {
+                    if ((hold_timer - HOLD_DELAY) % REPEAT_RATE == 0) {
+                        LCDputcharWrap('R');
+                    }
+                }
             }
         } else { // If nothing is pressed.
             // Reset last key.
             last_key = '\0';
+            hold_timer = 0;
             // Stop the counter.
             TIM3->CR1 &= ~TIM_CR1_CEN;
             // Low state on all columns.
