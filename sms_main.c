@@ -42,15 +42,16 @@ static const char *multi_tap_map[KEYBOARD_ROWS][KEYBOARD_COLUMNS] = {
 };
 
 typedef struct {
-    int cursor_x;               // Cursor position on screen in column
-    int cursor_y;               // Cursor position on screen in raw
-    int line_lengths[LCD_ROWS]; // How many characters are in each line. Used when doing backspace.
-    bool is_uppercase;          // Is capslock on.
-    char last_raw_key;
-    int multi_tap_idx;
-    int last_confirmed_idx; // For repeating action
-    int timeout_counter;
-    bool waits_for_confirmation;
+    int cursor_x;                // Cursor position on screen in column
+    int cursor_y;                // Cursor position on screen in raw
+    int line_lengths[LCD_ROWS];  // How many characters are in each line. Used when doing backspace.
+    bool is_uppercase;           // Is caps-lock on.
+    char last_raw_key;           // Last pressed key.
+    int multi_tap_idx;           // Index of the char in the `multi_tap_map`.
+    int last_confirmed_idx;      // Last confirmed index if the same key was held after a pause.
+    int timeout_counter;         // Counter for deciding when the character was accepted.
+    bool waits_for_confirmation; // Wether the currently pressed key waits for a timeout to be
+                                 // confirmed.
 } SMS_Editor_State_t;
 
 static SMS_Editor_State_t editor = {0};
@@ -72,7 +73,8 @@ static void keyboard_activate_exti(void) {
 }
 
 /**
- * @brief Scans the keyboard state. Returns the char of the pressed button or '\0' otherwise.
+ * @brief Scans the keyboard state. Returns the char of the pressed button or '\0' if nothing was
+ * pressed.
  */
 static char keyboard_scan(void) {
     for (int col = 0; col < KEYBOARD_COLUMNS; col++) {
@@ -96,12 +98,20 @@ static char keyboard_scan(void) {
 }
 
 // ==================== LCD ====================
+/**
+ * @brief Go to the (x, y) position on screen.
+ * Update the internal editor state with the new position.
+ */
 static void editor_goto_pos(int x, int y) {
     editor.cursor_x = x;
     editor.cursor_y = y;
     LCDgoto(y, x);
 }
 
+/**
+ * @brief Move to the next free character space on the LCD. Move to the next line if current line is
+ * filled. Update the internal editor state with the new position.
+ */
 static void editor_move_next(void) {
     editor.line_lengths[editor.cursor_y] = editor.cursor_x + 1;
     editor.cursor_x++;
@@ -113,6 +123,9 @@ static void editor_move_next(void) {
     LCDgoto(editor.cursor_y, editor.cursor_x);
 }
 
+/**
+ * @brief Clear the LCD screen and move to (0, 0).
+ */
 static void editor_clear_screen(void) {
     LCDclear();
     for (int i = 0; i < LCD_ROWS; i++)
@@ -122,6 +135,11 @@ static void editor_clear_screen(void) {
     editor.last_raw_key = '\0';
 }
 
+/**
+ * @brief Put a character on the current position on the LCD.
+ * @param c char to put on the screen.
+ * @param is_preview don't change cursor position after the char was inserted.
+ */
 static void editor_put_char(char c, bool is_preview) {
     if (isalpha((unsigned char)c)) {
         c = editor.is_uppercase ? toupper((unsigned char)c) : c;
@@ -136,6 +154,9 @@ static void editor_put_char(char c, bool is_preview) {
     }
 }
 
+/**
+ * @brief Remove the last typed character from the LCD screen.
+ */
 static void editor_backspace(void) {
     if (editor.waits_for_confirmation) {
         // If we we're in the middle of multi-tap, we just clear the current place
@@ -163,6 +184,10 @@ static void editor_backspace(void) {
     LCDgoto(editor.cursor_y, editor.cursor_x);
 }
 
+/**
+ * @brief Confirm the pending character. This is called after a timeout was exceeded and the typed
+ * char was accepted. Moves the the cursor to the next free spot.
+ */
 static void editor_confirm_char(void) {
     if (editor.waits_for_confirmation) {
         editor.last_confirmed_idx = editor.multi_tap_idx;
@@ -171,10 +196,15 @@ static void editor_confirm_char(void) {
     }
 }
 
-static void handle_sms_logic(char key, bool is_repeat) {
+/**
+ * @brief Handles the logic for a key press.
+ * @param key The key that was pressed.
+ * @param is_held_down Was this key held down, which means a repeat action.
+ */
+static void handle_sms_logic(char key, bool is_held_down) {
     // Action keys.
     if (key == 'A') { // CapsLock
-        if (!is_repeat)
+        if (!is_held_down)
             editor.is_uppercase = !editor.is_uppercase;
         return;
     }
@@ -183,13 +213,13 @@ static void handle_sms_logic(char key, bool is_repeat) {
         return;
     }
     if (key == 'C') {
-        if (!is_repeat)
+        if (!is_held_down)
             editor_clear_screen();
         return;
     }
 
     if (key == 'D') {
-        if (is_repeat) // Don't repeat new lines.
+        if (is_held_down) // Don't repeat new lines.
             return;
         editor_confirm_char(); // Confirm current char before new line.
         int next_y = (editor.cursor_y + 1) % LCD_ROWS;
@@ -217,7 +247,7 @@ static void handle_sms_logic(char key, bool is_repeat) {
         return;
     int len = strlen(chars);
 
-    if (is_repeat) {
+    if (is_held_down) {
         // If we started holding the same key as before after a break we use the saved confirmed
         // index.
         if (key == editor.last_raw_key) {
