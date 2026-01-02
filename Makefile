@@ -16,8 +16,7 @@ LDFLAGS = $(FLAGS) -Wl,--gc-sections -nostartfiles \
 -L/opt/arm/stm32/lds -Tstm32f411re.lds
 vpath %.c /opt/arm/stm32/src
 
-# TODO: Remove unused imports like delay etc.
-OBJECTS = sms_main.o startup_stm32.o delay.o gpio.o lcd.o fonts.o
+OBJECTS = sms_main.o startup_stm32.o gpio.o lcd.o fonts.o
 
 TARGET = sms
 .SECONDARY: $(TARGET).elf $(OBJECTS)
