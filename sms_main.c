@@ -1,11 +1,10 @@
 #include "cyclic_buffer.h"
+#include <ctype.h>
 #include <gpio.h>
 #include <lcd.h>
 #include <stdbool.h>
 #include <stm32.h>
 #include <string.h>
-#include <ctype.h>
-
 
 // ===== USART CONFIG =====
 #define USART_Enable USART_CR1_UE
@@ -75,9 +74,9 @@ static CyclicBuffer_t *out_buffer = &out_buffer_struct;
 static const int column_pins[] = {0, 1, 2, 3}; // PC0, PC1, PC2, PC3
 static const int row_pins[] = {6, 7, 8, 9};    // PC6, PC7, PC8, PC9
 static const char *small_key_map[4][4] = {
-    {".,?!1", "ABC2", "DEF3", NULL},  // A -> Shift
-    {"GHI4", "JKL5", "MNO6", NULL},   // B -> Backspace
-    {"PQRS7", "TUV8", "WXYZ9", NULL}, // C -> Clear
+    {".,?!1", "abc2", "def3", NULL},  // A -> Shift
+    {"ghi4", "jkl5", "mno6", NULL},   // B -> Backspace
+    {"pqrs7", "tuv8", "wxyz9", NULL}, // C -> Clear
     {"*", " 0", "#", NULL},           // D -> Enter/Newline
 };
 
@@ -99,7 +98,7 @@ typedef struct {
     bool waits_for_confirmation;
 } SMS_Editor_State_t;
 
-static SMS_Editor_State_t editor = {0, 0, true, '\0', 0, 0, false};
+static SMS_Editor_State_t editor = {0, 0, false, '\0', 0, 0, false};
 // ==================== LCD ====================
 static void editor_clear_screen(void) {
     LCDclear();
@@ -117,8 +116,8 @@ static void editor_new_line(void) {
 }
 
 static void editor_put_char(char c, bool is_preview) {
-    if (!isalpha((unsigned char)c)) {
-        c = editor.is_uppercase ? toupper(c) : tolower(c);
+    if (isalpha((unsigned char)c)) {
+        c = editor.is_uppercase ? toupper((unsigned char)c) : c;
     }
 
     LCDputchar(c);
@@ -126,9 +125,6 @@ static void editor_put_char(char c, bool is_preview) {
     if (is_preview) {
         // If a key is a preview (not accepted yet) we go back with the cursor.
         LCDgoto(editor.cursor_y, editor.cursor_x);
-    } else {
-        // TODO: Line wrapping
-        editor.cursor_x++;
     }
 }
 
@@ -138,12 +134,47 @@ static void handle_sms_logic(char key) {
         return;
     }
 
+    if (key == 'B') {
+        // If we we're in the middle of multi-tap, we just clear the current place
+        if (editor.waits_for_confirmation) {
+            editor.waits_for_confirmation = false;
+            editor.last_raw_key = '\0';
+
+            LCDgoto(editor.cursor_y, editor.cursor_x);
+            LCDputchar(' ');
+            LCDgoto(editor.cursor_y, editor.cursor_x);
+        } else {
+            if (editor.cursor_x > 0) { // This line not empty.
+                editor.cursor_x--;
+                LCDgoto(editor.cursor_y, editor.cursor_x);
+                LCDputchar(' ');
+                LCDgoto(editor.cursor_y, editor.cursor_x);
+            } else if (editor.cursor_y > 0) { // This line empty, take one step higher.
+                editor.cursor_y--;
+                editor.cursor_x = LCD_COLUMNS - 1;
+                LCDgoto(editor.cursor_y, editor.cursor_x);
+                LCDputchar(' ');
+                LCDgoto(editor.cursor_y, editor.cursor_x);
+            }
+        }
+        return;
+    }
+
     if (key == 'C') {
         editor_clear_screen();
+        editor.waits_for_confirmation = false;
+        editor.last_raw_key = '\0';
+        editor.timeout_counter = 0;
         return;
     }
 
     if (key == 'D') {
+        // If there was a multi-tap in progress we accept it and go to the new line.
+        if (editor.waits_for_confirmation) {
+            editor.cursor_x++;
+        }
+        editor.waits_for_confirmation = false;
+        editor.last_raw_key = '\0';
         editor_new_line();
         return;
     }
@@ -174,7 +205,9 @@ static void handle_sms_logic(char key) {
         // New key. Put the previous one on the screen if it wasn't confirmed.
         if (editor.waits_for_confirmation) {
             editor.cursor_x++;
-            LCDgoto(editor.cursor_y, editor.cursor_x);
+            if (editor.cursor_x >= LCD_COLUMNS) {
+                editor_new_line();
+            }
         }
         editor.last_raw_key = key;
         editor.multi_tap_idx = 0;
@@ -182,6 +215,7 @@ static void handle_sms_logic(char key) {
         editor.timeout_counter = 0;
     }
     // Show preview.
+    LCDgoto(editor.cursor_y, editor.cursor_x);
     editor_put_char(chars[editor.multi_tap_idx], true);
 }
 
@@ -294,6 +328,7 @@ void TIM3_IRQHandler(void) {
             } else { // Same key as before
                 hold_timer++;
                 if (hold_timer >= HOLD_DELAY) {
+                    // If the key is held, we repeat the action once in REPEAT_RATE.
                     if ((hold_timer - HOLD_DELAY) % REPEAT_RATE == 0) {
                         handle_sms_logic(current_key);
                     }
@@ -309,22 +344,29 @@ void TIM3_IRQHandler(void) {
                 // Timeout exceeded accept the key. It's already on the screen so we just move the
                 // cursor.
                 if (editor.timeout_counter >= MULTI_TAP_TIMEOUT) {
-                    editor.cursor_x++;
-                    LCDgoto(editor.cursor_y, editor.cursor_x);
-                    editor.waits_for_confirmation = false;
+                    editor.waits_for_confirmation = false; // Key is confirmed.
                     editor.last_raw_key = '\0';
+                    editor.cursor_x++;
+                    if (editor.cursor_x >= LCD_COLUMNS) {
+                        editor_new_line();
+                    } else {
+                        LCDgoto(editor.cursor_y, editor.cursor_x);
+                    }
                 }
 
-                // Stop the counter.
-                TIM3->CR1 &= ~TIM_CR1_CEN;
-                // Low state on all columns.
-                for (int col = 0; col < 4; col++) {
-                    GPIOC->BSRR = (1 << (column_pins[col] + 16));
+                // If no keys wait for confirmation we turn of the timer.
+                if (!editor.waits_for_confirmation) {
+                    // Stop the timer.
+                    TIM3->CR1 &= ~TIM_CR1_CEN;
+                    // Low state on all columns.
+                    for (int col = 0; col < 4; col++) {
+                        GPIOC->BSRR = (1 << (column_pins[col] + 16));
+                    }
+                    // Reset the EXTI interrupts.
+                    EXTI->PR = ROW_PINS;
+                    // Activate the interrupts.
+                    EXTI->IMR |= ROW_PINS;
                 }
-                // Reset the EXTI interrupts.
-                EXTI->PR = ROW_PINS;
-                // Activate the interrupts.
-                EXTI->IMR |= ROW_PINS;
             }
         }
     }
