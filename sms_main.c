@@ -3,6 +3,9 @@
 #include <lcd.h>
 #include <stdbool.h>
 #include <stm32.h>
+#include <string.h>
+#include <ctype.h>
+
 
 // ===== USART CONFIG =====
 #define USART_Enable USART_CR1_UE
@@ -57,8 +60,27 @@ static char internal_out_buffer[BUFFER_SIZE];
 static CyclicBuffer_t out_buffer_struct;
 static CyclicBuffer_t *out_buffer = &out_buffer_struct;
 
+#define TICK_MS 10
+// After 800ms the letter is changes if the same key is pressed.
+#define MULTI_TAP_TIMEOUT (800 / TICK_MS)
+// After 500ms a key hold is considered a hold.
+#define HOLD_DELAY (500 / TICK_MS)
+// After 500ms if a key hold is recognized we repeat the action again
+#define REPEAT_RATE (500 / TICK_MS)
+#define LCD_ROWS 5
+#define LCD_COLUMNS 9
+#define KEYBOARD_ROWS 4
+#define KEYBOARD_COLUMNS 4
+
 static const int column_pins[] = {0, 1, 2, 3}; // PC0, PC1, PC2, PC3
 static const int row_pins[] = {6, 7, 8, 9};    // PC6, PC7, PC8, PC9
+static const char *small_key_map[4][4] = {
+    {".,?!1", "ABC2", "DEF3", NULL},  // A -> Shift
+    {"GHI4", "JKL5", "MNO6", NULL},   // B -> Backspace
+    {"PQRS7", "TUV8", "WXYZ9", NULL}, // C -> Clear
+    {"*", " 0", "#", NULL},           // D -> Enter/Newline
+};
+
 static const char keymap[4][4] = {
     {'1', '2', '3', 'A'},
     {'4', '5', '6', 'B'},
@@ -66,41 +88,104 @@ static const char keymap[4][4] = {
     {'*', '0', '#', 'D'},
 };
 
-// ==================== UTILS ====================
-static int strLen(const char *line) {
-    int i = 0;
-    while (line[i] != '\0')
-        i++;
-    return i;
+// Editor state
+typedef struct {
+    int cursor_x;      // Cursor position on screen in column
+    int cursor_y;      // Cursor position on screen in raw
+    bool is_uppercase; // Is shift pressed.
+    char last_raw_key;
+    int multi_tap_idx;
+    int timeout_counter;
+    bool waits_for_confirmation;
+} SMS_Editor_State_t;
+
+static SMS_Editor_State_t editor = {0, 0, true, '\0', 0, 0, false};
+// ==================== LCD ====================
+static void editor_clear_screen(void) {
+    LCDclear();
+    editor.cursor_x = 0;
+    editor.cursor_y = 0;
+    LCDgoto(0, 0);
 }
 
-static void printLine(const char *line) {
-    if (strLen(line) + 2 > cycBufCapacity(out_buffer)) {
+static void editor_new_line(void) {
+    editor.cursor_x = 0;
+    editor.cursor_y++;
+    if (editor.cursor_y > LCD_ROWS)
+        editor.cursor_y = 0;
+    LCDgoto(editor.cursor_x, editor.cursor_y);
+}
+
+static void editor_put_char(char c, bool is_preview) {
+    if (!isalpha((unsigned char)c)) {
+        c = editor.is_uppercase ? toupper(c) : tolower(c);
+    }
+
+    LCDputchar(c);
+
+    if (is_preview) {
+        // If a key is a preview (not accepted yet) we go back with the cursor.
+        LCDgoto(editor.cursor_y, editor.cursor_x);
+    } else {
+        // TODO: Line wrapping
+        editor.cursor_x++;
+    }
+}
+
+static void handle_sms_logic(char key) {
+    if (key == 'A') { // Shift
+        editor.is_uppercase = !editor.is_uppercase;
         return;
     }
-    int i = 0;
-    while (line[i] != '\0') {
-        cycBufWrite(out_buffer, line[i++]);
+
+    if (key == 'C') {
+        editor_clear_screen();
+        return;
     }
-    cycBufWrite(out_buffer, '\r');
-    cycBufWrite(out_buffer, '\n');
+
+    if (key == 'D') {
+        editor_new_line();
+        return;
+    }
+
+    // Find the index in the map.
+    int row = -1, col = -1;
+    for (int i = 0; i < KEYBOARD_ROWS; i++) {
+        for (int j = 0; j < KEYBOARD_COLUMNS; j++) {
+            if (keymap[i][j] == key) {
+                row = i;
+                col = j;
+                break;
+            }
+        }
+    }
+
+    // Special keys should be handled above.
+    const char *chars = small_key_map[row][col];
+    if (chars == NULL)
+        return;
+    int len = strlen(chars);
+
+    if (key == editor.last_raw_key && editor.waits_for_confirmation) {
+        // Same key as before. Reset the timeout counter and loop to the next char.
+        editor.multi_tap_idx = (editor.multi_tap_idx + 1) % len;
+        editor.timeout_counter = 0;
+    } else {
+        // New key. Put the previous one on the screen if it wasn't confirmed.
+        if (editor.waits_for_confirmation) {
+            editor.cursor_x++;
+            LCDgoto(editor.cursor_y, editor.cursor_x);
+        }
+        editor.last_raw_key = key;
+        editor.multi_tap_idx = 0;
+        editor.waits_for_confirmation = true;
+        editor.timeout_counter = 0;
+    }
+    // Show preview.
+    editor_put_char(chars[editor.multi_tap_idx], true);
 }
 
 // ==================== SETUP ====================
-static void setupUart(void) {
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
-    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
-
-    GPIOafConfigure(GPIOA, 2, GPIO_OType_PP, GPIO_Fast_Speed, GPIO_PuPd_NOPULL, GPIO_AF_USART2);
-    GPIOafConfigure(GPIOA, 3, GPIO_OType_PP, GPIO_Fast_Speed, GPIO_PuPd_UP, GPIO_AF_USART2);
-
-    USART2->CR1 = USART_Mode_Rx_Tx | USART_WordLength_8b | USART_Parity_No;
-    USART2->CR2 = USART_StopBits_1;
-    USART2->CR3 = USART_FlowControl_None;
-    USART2->BRR = (PCLK1_HZ + (BAUD / 2U)) / BAUD;
-    USART2->CR1 |= USART_Enable;
-}
-
 static void setupKeyboardInterrupts(void) {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;
     RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN; // TODO: Why?
@@ -134,18 +219,6 @@ static void setupKeyboardInterrupts(void) {
 }
 
 static void setupBuffers(void) { cycBufInit(out_buffer, internal_out_buffer, BUFFER_SIZE); }
-
-// ==================== UART ====================
-/**
- * @brief Read one char from the `out_buffer` and send it to UART.
- */
-static void uartWrite(void) {
-    if (!cycBufEmpty(out_buffer) && (USART2->SR & USART_SR_TXE)) {
-        char val = '\0';
-        cycBufRead(out_buffer, &val);
-        USART2->DR = val;
-    }
-}
 
 // ==================== KEYBOARD ====================
 /**
@@ -199,8 +272,6 @@ void EXTI9_5_IRQHandler(void) {
         TIM3->CR1 |= TIM_CR1_CEN;
     }
 }
-#define HOLD_DELAY 50  // 50 * 10ms = 500ms
-#define REPEAT_RATE 20 // 20 * 10ms = 200ms
 
 void TIM3_IRQHandler(void) {
     static char last_key = '\0';
@@ -209,7 +280,7 @@ void TIM3_IRQHandler(void) {
     // Sprawdzamy czy to nasze przerwanie.
     // TODO: Czy tak trzeba?
     if (TIM3->SR & TIM_SR_UIF) {
-        // Wyzeruj znacznik przerwania
+        // Reset the interrupt flag.
         TIM3->SR = ~TIM_SR_UIF;
 
         char current_key = scanKeyboard();
@@ -217,18 +288,14 @@ void TIM3_IRQHandler(void) {
         if (current_key != '\0') {
             // New key, put it on the screen.
             if (current_key != last_key) {
-                char msg[] = "Key: X";
-                msg[5] = current_key;
-
-                hold_timer = 0;
-                printLine(msg);
-                LCDputcharWrap(current_key);
+                handle_sms_logic(current_key);
                 last_key = current_key;
+                hold_timer = 0;
             } else { // Same key as before
                 hold_timer++;
                 if (hold_timer >= HOLD_DELAY) {
                     if ((hold_timer - HOLD_DELAY) % REPEAT_RATE == 0) {
-                        LCDputcharWrap('R');
+                        handle_sms_logic(current_key);
                     }
                 }
             }
@@ -236,44 +303,39 @@ void TIM3_IRQHandler(void) {
             // Reset last key.
             last_key = '\0';
             hold_timer = 0;
-            // Stop the counter.
-            TIM3->CR1 &= ~TIM_CR1_CEN;
-            // Low state on all columns.
-            for (int col = 0; col < 4; col++) {
-                GPIOC->BSRR = (1 << (column_pins[col] + 16));
+
+            if (editor.waits_for_confirmation) {
+                editor.timeout_counter++;
+                // Timeout exceeded accept the key. It's already on the screen so we just move the
+                // cursor.
+                if (editor.timeout_counter >= MULTI_TAP_TIMEOUT) {
+                    editor.cursor_x++;
+                    LCDgoto(editor.cursor_y, editor.cursor_x);
+                    editor.waits_for_confirmation = false;
+                    editor.last_raw_key = '\0';
+                }
+
+                // Stop the counter.
+                TIM3->CR1 &= ~TIM_CR1_CEN;
+                // Low state on all columns.
+                for (int col = 0; col < 4; col++) {
+                    GPIOC->BSRR = (1 << (column_pins[col] + 16));
+                }
+                // Reset the EXTI interrupts.
+                EXTI->PR = ROW_PINS;
+                // Activate the interrupts.
+                EXTI->IMR |= ROW_PINS;
             }
-            // Reset the EXTI interrupts.
-            EXTI->PR = ROW_PINS;
-            // Activate the interrupts.
-            EXTI->IMR |= ROW_PINS;
         }
     }
-}
-
-#define LCD_CAPACITY 45
-static void lcdWriteLine(const char *line) {
-    if (strLen(line) > LCD_CAPACITY - 1) {
-        return;
-    }
-    int i = 0;
-    while (line[i] != '\0') {
-        LCDputcharWrap(line[i]);
-        i++;
-    }
-    LCDputcharWrap('\n');
 }
 
 int main(void) {
     LCDconfigure();
     setupKeyboardInterrupts();
     setupBuffers();
-    setupUart();
-
-    printLine("SMS Init");
-    lcdWriteLine("Press key:");
 
     for (;;) {
-        uartWrite();
-        // __WFI();
+        __WFI();
     }
 }
