@@ -5,31 +5,6 @@
 #include <stm32.h>
 #include <string.h>
 
-// ===== BUTTON CONFIG =====
-#define USER_BTN_GPIO GPIOC
-#define USER_BTN_PIN 13
-#define USER_BTN_ON_STATE 0
-
-#define MODE_BTN_GPIO GPIOA
-#define MODE_BTN_PIN 0
-#define MODE_BTN_ON_STATE 1
-
-#define UP_BTN_GPIO GPIOB
-#define UP_BTN_PIN 5
-#define UP_BTN_ON_STATE 0
-#define DOWN_BTN_GPIO GPIOB
-#define DOWN_BTN_PIN 6
-#define DOWN_BTN_ON_STATE 0
-#define RIGHT_BTN_GPIO GPIOB
-#define RIGHT_BTN_PIN 4
-#define RIGHT_BTN_ON_STATE 0
-#define LEFT_BTN_GPIO GPIOB
-#define LEFT_BTN_PIN 3
-#define LEFT_BTN_ON_STATE 0
-#define FIRE_BTN_GPIO GPIOB
-#define FIRE_BTN_PIN 10
-#define FIRE_BTN_ON_STATE 0
-
 // ==================== CONFIG ====================
 // Application.
 #define TICK_MS 10
@@ -66,11 +41,11 @@ static const char *multi_tap_map[KEYBOARD_ROWS][KEYBOARD_COLUMNS] = {
     {"*", " 0", "#", NULL},           // D -> Enter/Newline
 };
 
-// Editor state
 typedef struct {
-    int cursor_x;      // Cursor position on screen in column
-    int cursor_y;      // Cursor position on screen in raw
-    bool is_uppercase; // Is shift pressed.
+    int cursor_x;               // Cursor position on screen in column
+    int cursor_y;               // Cursor position on screen in raw
+    int line_lengths[LCD_ROWS]; // How many characters are in each line. Used when doing backspace.
+    bool is_uppercase;          // Is shift pressed.
     char last_raw_key;
     int multi_tap_idx;
     int last_confirmed_idx; // For repeating action
@@ -78,7 +53,7 @@ typedef struct {
     bool waits_for_confirmation;
 } SMS_Editor_State_t;
 
-static SMS_Editor_State_t editor = {0, 0, false, '\0', 0, 0, 0, false};
+static SMS_Editor_State_t editor = {0};
 
 // ==================== KEYBOARD ====================
 static void keyboard_set_columns_low(void) {
@@ -128,16 +103,20 @@ static void editor_goto_pos(int x, int y) {
 }
 
 static void editor_move_next(void) {
+    editor.line_lengths[editor.cursor_y] = editor.cursor_x + 1;
     editor.cursor_x++;
     if (editor.cursor_x >= LCD_COLUMNS) {
         editor.cursor_x = 0;
         editor.cursor_y = (editor.cursor_y + 1) % LCD_ROWS;
+        editor.line_lengths[editor.cursor_y] = 0;
     }
     LCDgoto(editor.cursor_y, editor.cursor_x);
 }
 
 static void editor_clear_screen(void) {
     LCDclear();
+    for (int i = 0; i < LCD_ROWS; i++)
+        editor.line_lengths[i] = 0;
     editor_goto_pos(0, 0);
     editor.waits_for_confirmation = false;
     editor.last_raw_key = '\0';
@@ -166,9 +145,17 @@ static void editor_backspace(void) {
         // If we last char was accepted, we take a step back end remove it.
         if (editor.cursor_x > 0) { // This line not empty.
             editor.cursor_x--;
+            editor.line_lengths[editor.cursor_y]--;
         } else if (editor.cursor_y > 0) { // This line empty, take one step higher.
             editor.cursor_y--;
-            editor.cursor_x = LCD_COLUMNS - 1;
+            // Go to the last written char in the previous line.
+            editor.cursor_x = editor.line_lengths[editor.cursor_y];
+            if (editor.cursor_x > 0) {
+                editor.cursor_x--;
+                editor.line_lengths[editor.cursor_y]--;
+            }
+        } else { // Already in (0, 0).
+            return;
         }
     }
     LCDgoto(editor.cursor_y, editor.cursor_x);
@@ -205,7 +192,11 @@ static void handle_sms_logic(char key, bool is_repeat) {
         if (is_repeat) // Don't repeat new lines.
             return;
         editor_confirm_char(); // Confirm current char before new line.
-        editor_goto_pos(0, (editor.cursor_y + 1) % LCD_ROWS);
+        int next_y = (editor.cursor_y + 1) % LCD_ROWS;
+        editor.line_lengths[next_y] = 0;
+        editor_goto_pos(0, next_y);
+        editor.last_raw_key = '\0';
+        return;
     }
 
     // Find the index in the map.
