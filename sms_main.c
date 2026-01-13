@@ -361,7 +361,7 @@ static void setupKeyboardInterrupts(void) {
     keyboard_set_columns_low();
 
     // Setup keyboard rows: Input with pull-up, Falling edge exti.
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < KEYBOARD_ROWS; i++) {
         GPIOinConfigure(GPIOC, keyboard_row_pins[i], GPIO_PuPd_UP, EXTI_Mode_Interrupt,
                         EXTI_Trigger_Falling);
     }
